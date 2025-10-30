@@ -14,6 +14,18 @@ import statistics
 import numpy as np
 
 # Import our PostgreSQL adapter
+# Allow a local .env file to provide DATABASE_URL or PGHOST before the DB
+# adapter is imported. This makes `python worker_of.py` pick up a `.env`
+# file in the project directory without requiring the caller to set env vars
+# in the shell every time.
+try:
+    # python-dotenv is optional; if missing we continue without raising.
+    from dotenv import load_dotenv
+    dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+    load_dotenv(dotenv_path)
+except Exception:
+    pass
+
 from db_postgres import get_db
 
 # Configure logging for DigitalOcean
@@ -223,6 +235,11 @@ for tf in TF_CONFIG:
             global_cvd_state[tf] = float(latest_row['cvd'])
             last_cvd_ts[tf] = int(float(latest_row['bucket'])) * 1000
             logger.info(f"Resumed {tf} CVD from database at {global_cvd_state[tf]}")
+
+# If the DB adapter fell back to a NullDB, log a single clear message here so
+# the main worker logger (not the DB module) announces persistence is disabled.
+if getattr(db, 'is_null', False):
+    logger.info("DB persistence is disabled — running with in-memory/no-op DB. Set DATABASE_URL or PGHOST to enable persistence.")
 
 def save_to_database(tf):
     """Save current bucket data to PostgreSQL database"""
