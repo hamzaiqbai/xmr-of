@@ -25,13 +25,19 @@ _DB = None
 
 class PostgresDB:
     def __init__(self):
-        self.conn = psycopg2.connect(
-            host=os.getenv('PGHOST', 'localhost'),
-            port=int(os.getenv('PGPORT', 5432)),
-            user=os.getenv('PGUSER', 'postgres'),
-            password=os.getenv('PGPASSWORD', ''),
-            dbname=os.getenv('PGDATABASE', 'postgres')
-        )
+        # Prefer a full DATABASE_URL if provided (common in hosted DB services)
+        database_url = os.getenv('DATABASE_URL')
+        if database_url:
+            # psycopg2 accepts a DSN string
+            self.conn = psycopg2.connect(database_url)
+        else:
+            self.conn = psycopg2.connect(
+                host=os.getenv('PGHOST', 'localhost'),
+                port=int(os.getenv('PGPORT', 5432)),
+                user=os.getenv('PGUSER', 'postgres'),
+                password=os.getenv('PGPASSWORD', ''),
+                dbname=os.getenv('PGDATABASE', 'postgres')
+            )
         self.conn.autocommit = True
         self.cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         self._ensure_table()
@@ -175,5 +181,32 @@ class PostgresDB:
 def get_db() -> PostgresDB:
     global _DB
     if _DB is None:
-        _DB = PostgresDB()
+        try:
+            _DB = PostgresDB()
+        except Exception as e:
+            # Do not crash the whole process for a DB connection error in dev.
+            # Log the exception at DEBUG level so production logs aren't noisy,
+            # but emit a single INFO-level message so developers know persistence
+            # is disabled.
+            logger.debug("PostgresDB connection failed", exc_info=True)
+            logger.info("DB persistence disabled; running with NullDB. Set DATABASE_URL or PGHOST to enable persistence.")
+            class NullDB:
+                """A minimal no-op DB used when a real Postgres connection cannot be
+                established. This lets the worker run without persistence during
+                development or in environments where the DB is optional.
+                """
+                is_null = True
+
+                def get_latest_bucket(self, *a, **k):
+                    return None
+
+                def save_bucket_data(self, *a, **k):
+                    # Pretend the save succeeded; log at DEBUG so developers know
+                    # that persistence is disabled but the worker continues.
+                    logger.debug("NullDB: dropped save_bucket_data call (persistence disabled).")
+                    return True
+
+                def close(self):
+                    return None
+            _DB = NullDB()
     return _DB
